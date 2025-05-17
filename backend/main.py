@@ -2,7 +2,7 @@ from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from routers import auth, patient, document, doctor
 import uvicorn
-from database import Base, engine, mongo_client
+from database import Base, engine, mongo_client, mongodb
 import psycopg2
 from psycopg2.extras import RealDictCursor
 import jwt
@@ -38,14 +38,18 @@ app.add_middleware(
 @app.on_event("startup")
 async def startup_db_client():
     try:
-        # Test PostgreSQL connection
+        # Test PostgreSQL connection using psycopg2
         conn = psycopg2.connect(
-            dbname="postgres",
-            user="postgres",
-            password="postgres",
-            host="localhost",
-            port="5432"
+            dbname=os.getenv("DB_NAME", "dockothon"),
+            user=os.getenv("DB_USER", "postgres"),
+            password=os.getenv("DB_PASSWORD", "Vish@123#"),  # Use raw password here
+            host=os.getenv("DB_HOST", "localhost"),
+            port=os.getenv("DB_PORT", "5432")
         )
+        # Test the connection
+        cur = conn.cursor()
+        cur.execute('SELECT 1')
+        cur.close()
         conn.close()
         print("\033[92m✓ Successfully connected to PostgreSQL!\033[0m")
     except Exception as e:
@@ -64,100 +68,6 @@ app.include_router(patient.router, prefix="/patients", tags=["Patients"])
 app.include_router(document.router, prefix="/documents", tags=["Documents"])
 app.include_router(doctor.router, prefix="/api", tags=["Doctor"])
 
-# Database connection
-def get_db_connection():
-    try:
-        conn = psycopg2.connect(
-            dbname=os.getenv('DB_NAME'),
-            user=os.getenv('DB_USER'),
-            password=os.getenv('DB_PASSWORD'),
-            host=os.getenv('DB_HOST'),
-            port=os.getenv('DB_PORT'),
-            cursor_factory=RealDictCursor
-        )
-        return conn
-    except Exception as e:
-        print(f"Database connection error: {e}")
-        raise HTTPException(status_code=500, detail="Database connection error")
-
-class LoginRequest(BaseModel):
-    id: str
-    password: str
-    role: str
-
-@app.post("/api/auth/login")
-async def login(request: LoginRequest):
-    try:
-        conn = get_db_connection()
-        cur = conn.cursor()
-
-        # Query to find user
-        query = """
-            SELECT 
-                u.id, 
-                u.aadhaar_id, 
-                u.abha_id, 
-                u.name, 
-                u.hashed_password, 
-                u.role,
-                CASE 
-                    WHEN u.role = 'doctor' THEN d.specialization 
-                    WHEN u.role = 'staff' THEN s.department
-                END as department_or_specialization
-            FROM users u
-            LEFT JOIN doctors d ON u.id = d.user_id
-            LEFT JOIN staff s ON u.id = s.user_id
-            WHERE (u.aadhaar_id = %s OR u.abha_id = %s)
-            AND u.role::text = %s
-            AND u.is_active = true
-        """
-        
-        cur.execute(query, (request.id, request.id, request.role))
-        user = cur.fetchone()
-
-        if not user:
-            raise HTTPException(status_code=401, detail="Invalid credentials")
-
-        # For demo purposes, check if password matches 'password123'
-        # In production, you should use proper password hashing
-        if request.password != 'password123':
-            raise HTTPException(status_code=401, detail="Invalid credentials")
-
-        # Generate JWT token
-        token = jwt.encode(
-            {
-                'user_id': user['id'],
-                'role': user['role'],
-                'exp': datetime.utcnow() + timedelta(days=1)
-            },
-            os.getenv('JWT_SECRET', 'your-secret-key'),
-            algorithm='HS256'
-        )
-
-        return {
-            "success": True,
-            "token": token,
-            "user": {
-                "id": str(user['id']),
-                "name": user['name'],
-                "role": user['role'],
-                "aadhaar_id": user['aadhaar_id'],
-                "abha_id": user['abha_id']
-            }
-        }
-
-    except HTTPException as e:
-        raise e
-    except Exception as e:
-        print(f"Login error: {e}")
-        raise HTTPException(status_code=500, detail="An error occurred during login")
-    finally:
-        if 'cur' in locals():
-            cur.close()
-        if 'conn' in locals():
-            conn.close()
-
-# Health check endpoint
 @app.get("/health")
 async def health_check():
     return {"status": "healthy"}

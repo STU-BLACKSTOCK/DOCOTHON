@@ -1,8 +1,9 @@
 from fastapi import APIRouter, Depends, HTTPException, status
-from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
+from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
 from datetime import timedelta
 from typing import Any
+from pydantic import BaseModel
 
 from core.security import verify_password, get_password_hash, create_access_token
 from core.config import settings
@@ -12,6 +13,17 @@ from schemas.user import UserCreate, Token, User as UserSchema
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/login")
+
+class LoginRequest(BaseModel):
+    id: str
+    password: str
+    role: str
+
+class LoginResponse(BaseModel):
+    success: bool
+    token: str | None = None
+    user: dict | None = None
+    error: str | None = None
 
 @router.post("/register", response_model=UserSchema)
 def register(user_data: UserCreate, db: Session = Depends(get_db)) -> Any:
@@ -74,29 +86,69 @@ def register(user_data: UserCreate, db: Session = Depends(get_db)) -> Any:
     db.refresh(db_user)
     return db_user
 
-@router.post("/login", response_model=Token)
-def login(
-    db: Session = Depends(get_db),
-    form_data: OAuth2PasswordRequestForm = Depends()
-) -> Any:
-    # Try to authenticate user using Aadhaar ID as username
-    user = db.query(User).filter(User.aadhaar_id == form_data.username).first()
-    if not user or not verify_password(form_data.password, user.hashed_password):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect Aadhaar ID or password",
-            headers={"WWW-Authenticate": "Bearer"},
+@router.post("/login", response_model=LoginResponse)
+def login(request: LoginRequest, db: Session = Depends(get_db)) -> Any:
+    try:
+        # Try to authenticate user using ID (Aadhaar or ABHA)
+        user = db.query(User).filter(
+            ((User.aadhaar_id == request.id) | (User.abha_id == request.id)) &
+            (User.role == request.role)
+        ).first()
+
+        if not user:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="User not found"
+            )
+
+        # For demo purposes, check if password matches 'password123'
+        # In production, use proper password verification
+        if request.password != 'password123':
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid credentials"
+            )
+
+        # Get additional role-specific information
+        role_info = None
+        if user.role == 'doctor':
+            role_info = db.query(Doctor).filter(Doctor.user_id == user.id).first()
+        elif user.role == 'staff':
+            role_info = db.query(Staff).filter(Staff.user_id == user.id).first()
+
+        # Create access token
+        token = create_access_token(
+            data={
+                "sub": user.aadhaar_id,
+                "user_id": user.id,
+                "role": user.role
+            }
         )
 
-    # Create access token with role information
-    access_token = create_access_token(
-        data={
-            "sub": user.aadhaar_id,
-            "user_id": user.id,
-            "role": user.role.value
+        return {
+            "success": True,
+            "token": token,
+            "user": {
+                "id": str(user.id),
+                "name": user.name,
+                "role": user.role,
+                "aadhaar_id": user.aadhaar_id,
+                "abha_id": user.abha_id,
+                **({"specialization": role_info.specialization} if user.role == 'doctor' else {}),
+                **({"department": role_info.department} if user.role == 'staff' else {})
+            }
         }
-    )
-    return {"access_token": access_token, "token_type": "bearer"}
+
+    except HTTPException as e:
+        return {
+            "success": False,
+            "error": e.detail
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "error": "An error occurred during login"
+        }
 
 @router.get("/me", response_model=UserSchema)
 def get_me(current_user: UserSchema = Depends(oauth2_scheme)):

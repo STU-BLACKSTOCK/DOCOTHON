@@ -9,8 +9,8 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # PostgreSQL Configuration
-DATABASE_URL = f"postgresql://postgres:postgres@localhost:5432/postgres"
-engine = create_engine(DATABASE_URL)
+SQLALCHEMY_DATABASE_URL = "postgresql://postgres:postgres@localhost:5432/healthdata"
+engine = create_engine(SQLALCHEMY_DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
@@ -33,4 +33,7 @@ def get_db():
 
 # MongoDB Dependency
 def get_mongodb():
-    return mongodb
+    try:
+        yield mongodb
+    finally:
+        pass
